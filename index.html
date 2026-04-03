@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>eBay Watchlist Parser</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+  h1 { color: #1f4e79; margin-bottom: 4px; }
+  .subtitle { color: #666; margin-bottom: 16px; font-size: 14px; }
+
+  /* Import panel */
+  .import-panel {
+    background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  }
+  .import-panel label { font-weight: bold; color: #1f4e79; font-size: 14px; }
+  .import-panel .file-input-wrap {
+    position: relative; display: inline-block;
+  }
+  .import-panel input[type="file"] { font-size: 13px; }
+  .import-mode { display: flex; gap: 12px; align-items: center; }
+  .import-mode label { font-weight: normal; color: #333; cursor: pointer; font-size: 13px; }
+  .import-mode input[type="radio"] { margin-right: 4px; }
+  .btn {
+    padding: 8px 18px; border: none; border-radius: 4px; font-size: 13px;
+    cursor: pointer; font-weight: bold; transition: background 0.2s;
+  }
+  .btn-primary { background: #1f4e79; color: #fff; }
+  .btn-primary:hover { background: #163d5e; }
+  .btn-primary:disabled { background: #999; cursor: not-allowed; }
+  .btn-danger { background: #d03706; color: #fff; }
+  .btn-danger:hover { background: #a52a00; }
+  .btn-export { background: #2e7d32; color: #fff; }
+  .btn-export:hover { background: #1b5e20; }
+  .import-status { font-size: 13px; color: #555; min-height: 18px; margin-top: 4px; }
+  .import-status.error { color: #d03706; }
+  .import-status.success { color: #2e7d32; }
+
+  /* Controls */
+  .controls { margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .controls label { font-size: 13px; color: #555; }
+  .controls select, .controls input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+  .item-count { font-size: 13px; color: #1f4e79; font-weight: bold; margin-left: auto; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
+  th { background: #1f4e79; color: #fff; padding: 12px 10px; text-align: left; font-size: 13px; cursor: pointer; user-select: none; }
+  th:hover { background: #163d5e; }
+  th .arrow { font-size: 10px; margin-left: 4px; opacity: 0.6; }
+  th.sorted .arrow { opacity: 1; }
+  td { padding: 10px; border-bottom: 1px solid #e8e8e8; vertical-align: middle; }
+  tr:hover { background: #f0f7ff; }
+  .num { width: 40px; text-align: center; color: #999; font-size: 13px; }
+  .img-cell { width: 140px; text-align: center; }
+  .img-cell img { max-width: 120px; max-height: 120px; border-radius: 4px; border: 1px solid #ddd; }
+  .no-img { width: 120px; height: 80px; background: #eee; display: flex; align-items: center; justify-content: center; color: #999; font-size: 12px; border-radius: 4px; margin: 0 auto; }
+  .title { font-size: 14px; }
+  .title a { color: #0654ba; text-decoration: none; }
+  .title a:hover { text-decoration: underline; }
+  .price { font-weight: bold; white-space: nowrap; font-size: 14px; }
+  .type { font-weight: bold; font-size: 13px; white-space: nowrap; }
+  .type.bin { color: #2e7d32; }
+  .type.auction { color: #e65100; }
+  .ends { font-size: 13px; white-space: nowrap; color: #555; }
+  .bids { font-size: 13px; color: #555; text-align: center; }
+  .empty-state { text-align: center; padding: 60px 20px; color: #999; font-size: 16px; }
+  .empty-state p { margin-bottom: 8px; }
+
+  /* Duplicate badge */
+  .dupe-badge { background: #fff3cd; color: #856404; font-size: 11px; padding: 2px 6px; border-radius: 3px; margin-left: 6px; }
+</style>
+</head>
+<body>
+
+<h1>eBay Watchlist Parser</h1>
+<p class="subtitle">Import saved eBay watchlist .mhtml or .html files to view and manage your watched items.</p>
+
+<div class="import-panel">
+  <div>
+    <label>Import Watchlist File:</label><br>
+    <input type="file" id="fileInput" accept=".mhtml,.html,.htm" multiple>
+  </div>
+  <div class="import-mode">
+    <label><input type="radio" name="importMode" value="replace" checked> Replace all</label>
+    <label><input type="radio" name="importMode" value="add"> Add new items</label>
+  </div>
+  <button class="btn btn-primary" id="importBtn" disabled>Import</button>
+  <button class="btn btn-danger" id="clearBtn">Clear All</button>
+  <button class="btn btn-export" id="exportBtn">Export HTML</button>
+  <div class="import-status" id="importStatus"></div>
+</div>
+
+<div class="controls">
+  <label>Filter: <select id="typeFilter">
+    <option value="all">All Types</option>
+    <option value="Buy It Now">Buy It Now</option>
+    <option value="Auction">Auction</option>
+  </select></label>
+  <label>Search: <input type="text" id="searchBox" placeholder="Search titles..."></label>
+  <span class="item-count" id="itemCount"></span>
+</div>
+
+<table id="watchTable">
+  <thead><tr>
+    <th data-col="0" data-type="num"># <span class="arrow">&#9650;</span></th>
+    <th>Image</th>
+    <th data-col="2" data-type="text">Item Title <span class="arrow">&#9650;</span></th>
+    <th data-col="3" data-type="price">Price <span class="arrow">&#9650;</span></th>
+    <th data-col="4" data-type="text">Type <span class="arrow">&#9650;</span></th>
+    <th data-col="5" data-type="date">Ends <span class="arrow">&#9650;</span></th>
+    <th data-col="6" data-type="num">Bids <span class="arrow">&#9650;</span></th>
+  </tr></thead>
+  <tbody id="tableBody">
+  </tbody>
+</table>
+
+<div class="empty-state" id="emptyState">
+  <p>No items loaded.</p>
+  <p>Import an eBay watchlist .mhtml or .html file to get started.</p>
+</div>
+
+<script>
+// ── State ──
+let items = [];
+let sortDir = {};
+
+// ── DOM refs ──
+const fileInput = document.getElementById('fileInput');
+const importBtn = document.getElementById('importBtn');
+const clearBtn = document.getElementById('clearBtn');
+const exportBtn = document.getElementById('exportBtn');
+const importStatus = document.getElementById('importStatus');
+const tableBody = document.getElementById('tableBody');
+const emptyState = document.getElementById('emptyState');
+const itemCount = document.getElementById('itemCount');
+const typeFilter = document.getElementById('typeFilter');
+const searchBox = document.getElementById('searchBox');
+
+// ── File input ──
+fileInput.addEventListener('change', () => {
+  importBtn.disabled = !fileInput.files.length;
+});
+
+importBtn.addEventListener('click', async () => {
+  const files = Array.from(fileInput.files);
+  if (!files.length) return;
+
+  const mode = document.querySelector('input[name="importMode"]:checked').value;
+  importBtn.disabled = true;
+  setStatus('Parsing...', '');
+
+  let newItems = [];
+  let errors = [];
+
+  for (const file of files) {
+    try {
+      const text = await file.text();
+      let html = text;
+
+      // If MHTML, extract the HTML content
+      if (file.name.endsWith('.mhtml') || text.startsWith('From:')) {
+        html = extractHtmlFromMhtml(text);
+      }
+
+      const parsed = parseWatchlistHtml(html);
+      if (parsed.length === 0) {
+        errors.push(file.name + ': no items found');
+      } else {
+        newItems = newItems.concat(parsed);
+      }
+    } catch (e) {
+      errors.push(file.name + ': ' + e.message);
+    }
+  }
+
+  if (newItems.length === 0 && errors.length > 0) {
+    setStatus(errors.join('; '), 'error');
+    importBtn.disabled = false;
+    return;
+  }
+
+  if (mode === 'replace') {
+    items = newItems;
+  } else {
+    // Add mode: merge by item ID, skip duplicates
+    const existingIds = new Set(items.map(i => i.id));
+    let dupeCount = 0;
+    for (const item of newItems) {
+      if (existingIds.has(item.id)) {
+        dupeCount++;
+      } else {
+        items.push(item);
+        existingIds.add(item.id);
+      }
+    }
+    if (dupeCount > 0) {
+      setStatus(`Added ${newItems.length - dupeCount} new items (${dupeCount} duplicates skipped).`, 'success');
+    } else {
+      setStatus(`Added ${newItems.length} items.`, 'success');
+    }
+  }
+
+  if (mode === 'replace') {
+    setStatus(`Loaded ${newItems.length} items from ${files.length} file(s).` +
+      (errors.length ? ' Errors: ' + errors.join('; ') : ''), errors.length ? '' : 'success');
+  }
+
+  saveToStorage();
+  renderTable();
+  importBtn.disabled = false;
+});
+
+clearBtn.addEventListener('click', () => {
+  if (!items.length || !confirm('Clear all items?')) return;
+  items = [];
+  saveToStorage();
+  renderTable();
+  setStatus('All items cleared.', '');
+});
+
+exportBtn.addEventListener('click', () => {
+  if (!items.length) { setStatus('No items to export.', 'error'); return; }
+  exportGalleryHtml();
+});
+
+// ── MHTML Parsing ──
+function extractHtmlFromMhtml(mhtmlText) {
+  // Find boundary
+  const boundaryMatch = mhtmlText.match(/boundary="([^"]+)"/);
+  if (!boundaryMatch) {
+    // Maybe it's just HTML wrapped in MHTML headers
+    const htmlStart = mhtmlText.indexOf('<!DOCTYPE') !== -1 ? mhtmlText.indexOf('<!DOCTYPE') : mhtmlText.indexOf('<html');
+    if (htmlStart >= 0) return mhtmlText.substring(htmlStart);
+    throw new Error('Could not find MHTML boundary or HTML content');
+  }
+
+  const boundary = boundaryMatch[1];
+  const parts = mhtmlText.split('--' + boundary);
+
+  for (const part of parts) {
+    // Look for the main text/html part (not iframes/sub-resources)
+    if (part.includes('Content-Type: text/html') && !part.includes('container.html') && !part.includes('cookie_push')) {
+      // Check if it's the main watchlist page
+      const isMainPage = part.includes('ebay.com/mye/myebay/watchlist') ||
+                         part.includes('m-item-3') ||
+                         part.includes('data-itemid');
+
+      let content = part;
+
+      // Remove MIME headers
+      const headerEnd = content.indexOf('\r\n\r\n');
+      if (headerEnd >= 0) {
+        content = content.substring(headerEnd + 4);
+      } else {
+        const headerEnd2 = content.indexOf('\n\n');
+        if (headerEnd2 >= 0) content = content.substring(headerEnd2 + 2);
+      }
+
+      // Check transfer encoding
+      const isQuotedPrintable = part.includes('Content-Transfer-Encoding: quoted-printable');
+      const isBase64 = part.includes('Content-Transfer-Encoding: base64');
+
+      if (isQuotedPrintable) {
+        content = decodeQuotedPrintable(content);
+      } else if (isBase64) {
+        try { content = atob(content.replace(/\s/g, '')); } catch(e) {}
+      }
+
+      if (isMainPage || content.includes('m-item-3') || content.includes('data-itemid')) {
+        return content;
+      }
+    }
+  }
+
+  // Fallback: try the first text/html part
+  for (const part of parts) {
+    if (part.includes('Content-Type: text/html')) {
+      let content = part;
+      const headerEnd = content.indexOf('\r\n\r\n');
+      if (headerEnd >= 0) content = content.substring(headerEnd + 4);
+      else {
+        const h2 = content.indexOf('\n\n');
+        if (h2 >= 0) content = content.substring(h2 + 2);
+      }
+      if (part.includes('quoted-printable')) content = decodeQuotedPrintable(content);
+      return content;
+    }
+  }
+
+  throw new Error('No HTML content found in MHTML file');
+}
+
+function decodeQuotedPrintable(str) {
+  // Remove soft line breaks (=\r\n or =\n)
+  str = str.replace(/=\r?\n/g, '');
+  // Decode =XX hex sequences
+  str = str.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  return str;
+}
+
+// ── Script Metadata Extraction ──
+// eBay embeds a large JSON script with endTime and listing type per item.
+// We extract end dates and check for "Or Buy It Now" to classify type.
+function extractScriptMetadata(html) {
+  const meta = {}; // keyed by item ID -> { endTime, listingType }
+  const scriptRegex = new RegExp('<script[^>]*>([\\s\\S]*?)<\\/script>', 'gi');
+  let bigScript = '';
+  let match;
+  while ((match = scriptRegex.exec(html)) !== null) {
+    if (match[1].length > bigScript.length) {
+      bigScript = match[1];
+    }
+  }
+  if (bigScript.length < 1000) return meta;
+
+  // Find all item IDs referenced in the script
+  const idRegex = /\/itm\/(\d{9,15})/g;
+  const ids = new Set();
+  while ((match = idRegex.exec(bigScript)) !== null) {
+    ids.add(match[1]);
+  }
+
+  for (const iid of ids) {
+    const endTimes = [];
+    let hasOrBin = false;
+    let pos = 0;
+    while ((pos = bigScript.indexOf(iid, pos)) !== -1) {
+      const block = bigScript.substring(pos, pos + 3000);
+      // End time: "endTime":{"value":"2026-04-07T18:47:56.000Z"}
+      const etMatch = block.match(/"endTime"\s*:\s*\{\s*"value"\s*:\s*"([^"]+)"/);
+      if (etMatch) endTimes.push(etMatch[1]);
+      // "Or Buy It Now" means auction with BIN option
+      if (block.indexOf('Or Buy It Now') !== -1) hasOrBin = true;
+      pos += iid.length;
+    }
+    meta[iid] = {
+      endTime: endTimes.length > 0 ? endTimes[0] : '',
+      listingType: hasOrBin ? 'Auction (+ BIN)' : 'Buy It Now'
+    };
+  }
+  return meta;
+}
+
+// ── HTML Parsing ──
+function parseWatchlistHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const results = [];
+
+  // Strategy 1: eBay watchlist page (m-item-3 structure)
+  const itemBlocks = doc.querySelectorAll('.m-item-3');
+  if (itemBlocks.length > 0) {
+    // Extract metadata from the largest embedded script (contains JSON with endTime, listing type)
+    const scriptMeta = extractScriptMetadata(html);
+    itemBlocks.forEach(block => {
+      const item = parseEbayWatchlistItem(block, scriptMeta);
+      if (item) results.push(item);
+    });
+    return results;
+  }
+
+  // Strategy 2: Single eBay listing page (individual item saved as HTML/MHTML)
+  // Detected by canonical URL or og:url pointing to /itm/ID
+  const canonicalEl = doc.querySelector('link[rel="canonical"][href*="/itm/"], meta[property="og:url"][content*="/itm/"]');
+  if (canonicalEl) {
+    const item = parseSingleListingPage(doc, html, canonicalEl);
+    if (item) {
+      results.push(item);
+      return results;
+    }
+  }
+
+  // Strategy 3: Saved gallery HTML (our own output format)
+  const galleryRows = doc.querySelectorAll('#watchTable tbody tr, table tbody tr');
+  if (galleryRows.length > 0) {
+    galleryRows.forEach(row => {
+      const item = parseGalleryRow(row);
+      if (item) results.push(item);
+    });
+    return results;
+  }
+
+  // Strategy 4: Try to find any eBay item links (fallback)
+  const links = doc.querySelectorAll('a[href*="ebay.com/itm/"]');
+  if (links.length > 0) {
+    const seen = new Set();
+    links.forEach(link => {
+      const match = link.href.match(/\/itm\/(\d+)/);
+      if (match && !seen.has(match[1])) {
+        seen.add(match[1]);
+        const title = link.textContent.trim();
+        if (title && title !== 'Buy It Now' && title !== 'Bid Now' && title !== 'Best Offer' && title.length > 5) {
+          results.push({
+            id: match[1],
+            title: title,
+            url: 'https://www.ebay.com/itm/' + match[1],
+            image: '',
+            price: '',
+            type: '',
+            endDate: '',
+            bids: ''
+          });
+        }
+      }
+    });
+    return results;
+  }
+
+  return results;
+}
+
+function parseEbayWatchlistItem(block, scriptMeta) {
+  try {
+    // Item ID
+    const checkbox = block.querySelector('[data-itemid]');
+    const id = checkbox ? checkbox.getAttribute('data-itemid') : '';
+    if (!id) return null;
+
+    // Title
+    const titleEl = block.querySelector('[data-testid="title"] a, .m-item-3-col__title a');
+    const title = titleEl ? titleEl.textContent.trim() : '';
+    const url = titleEl ? titleEl.href : 'https://www.ebay.com/itm/' + id;
+
+    // Image — extract hash and build CDN URL
+    const imgEl = block.querySelector('.m-item-3-col__column--image img, .m-image img');
+    let image = '';
+    if (imgEl) {
+      const src = imgEl.getAttribute('src') || '';
+      // Check for eBay CDN URL with image hash
+      const hashMatch = src.match(/images\/g\/([A-Za-z0-9~_\-]+)\//);
+      if (hashMatch) {
+        image = 'https://i.ebayimg.com/images/g/' + hashMatch[1] + '/s-l500.jpg';
+      } else if (src.includes('ebayimg.com')) {
+        image = src.replace(/s-l\d+/, 's-l500');
+      } else {
+        image = imgEl.getAttribute('data-src') || src;
+        image = image.replace(/s-l\d+/, 's-l500');
+      }
+    }
+
+    // Price
+    const priceEl = block.querySelector('[data-testid="price"] .BOLD, [data-testid="price"] span');
+    let price = '';
+    if (priceEl) {
+      price = priceEl.textContent.trim().replace(/^US\s+/, '');
+    }
+
+    // Type detection: DOM signals are per-item-block, so they're the most reliable source.
+    // - data-testid="bid-count" with content → item is an Auction
+    // - data-testid="other-buying-format" with "Or Buy It Now" → Auction (+ BIN)
+    // - No bid-count → Buy It Now
+    const bidCountEl = block.querySelector('[data-testid="bid-count"]');
+    const bidText = bidCountEl ? bidCountEl.textContent.trim() : '';
+    const hasBids = bidText.length > 0;
+
+    const otherFormat = block.querySelector('[data-testid="other-buying-format"]');
+    const hasOrBin = otherFormat && otherFormat.textContent.includes('Buy It Now');
+
+    let type = 'Buy It Now';
+    if (hasBids && hasOrBin) {
+      type = 'Auction (+ BIN)';
+    } else if (hasBids) {
+      type = 'Auction';
+    }
+
+    // Bids count
+    let bids = '';
+    if (hasBids) {
+      const bidMatch = bidText.match(/(\d+)\s*bids?/);
+      if (bidMatch) bids = bidMatch[1];
+    }
+
+    // End date: prefer absolute ISO date from script metadata, fall back to relative time from DOM
+    const meta = (scriptMeta && scriptMeta[id]) || {};
+    let endDate = meta.endTime || '';
+
+    if (!endDate) {
+      const timeEl = block.querySelector('[data-testid="time-left"] .DEFAULT, [data-testid="time-left"] .URGENT');
+      if (timeEl) {
+        const timeLeft = timeEl.textContent.trim();
+        if (timeLeft) endDate = relativeTimeToDate(timeLeft);
+      }
+    }
+
+    return { id, title, url: normalizeUrl(url, id), image, price, type, endDate, bids };
+  } catch (e) {
+    console.warn('Failed to parse item block:', e);
+    return null;
+  }
+}
+
+function parseSingleListingPage(doc, html, canonicalEl) {
+  try {
+    // Item ID from canonical/og:url
+    const href = canonicalEl.getAttribute('href') || canonicalEl.getAttribute('content') || '';
+    const idMatch = href.match(/\/itm\/(\d+)/);
+    if (!idMatch) return null;
+    const id = idMatch[1];
+
+    // Title from <title> tag, strip " | eBay" suffix
+    const titleEl = doc.querySelector('title');
+    let title = titleEl ? titleEl.textContent.trim() : '';
+    title = title.replace(/\s*[\|–\-]\s*eBay.*$/i, '').trim();
+
+    // Price: US $XX.XX
+    const priceMatch = html.match(/US \$([\d,.]+)/);
+    const price = priceMatch ? '$' + priceMatch[1] : '';
+
+    // Listing type: "Place bid" vs "Buy It Now"
+    const hasBid = /Place bid/i.test(html);
+    const hasBin = /Buy It Now/.test(html);
+    let type = 'Buy It Now';
+    if (hasBid && hasBin) type = 'Auction (+ BIN)';
+    else if (hasBid) type = 'Auction';
+
+    // End time from embedded JSON
+    const etMatch = html.match(/"endTime"\s*:\s*\{\s*"value"\s*:\s*"([^"]+)"/);
+    const endDate = etMatch ? etMatch[1] : '';
+
+    // Image: first ebayimg hash found (primary listing image)
+    const imgMatch = html.match(/images\/g\/([A-Za-z0-9~_\-]+)\//);
+    const image = imgMatch ? 'https://i.ebayimg.com/images/g/' + imgMatch[1] + '/s-l500.jpg' : '';
+
+    return {
+      id, title,
+      url: 'https://www.ebay.com/itm/' + id,
+      image, price, type, endDate, bids: ''
+    };
+  } catch (e) {
+    console.warn('Failed to parse single listing:', e);
+    return null;
+  }
+}
+
+function parseGalleryRow(row) {
+  try {
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 4) return null;
+
+    const titleLink = row.querySelector('.title a, td a[href*="ebay.com/itm/"]');
+    if (!titleLink) return null;
+
+    const urlMatch = titleLink.href.match(/\/itm\/(\d+)/);
+    const id = urlMatch ? urlMatch[1] : '';
+    const title = titleLink.textContent.trim();
+    const imgEl = row.querySelector('img');
+    const image = imgEl ? imgEl.src : '';
+
+    // Find price cell
+    const priceEl = row.querySelector('.price');
+    const price = priceEl ? priceEl.textContent.trim() : '';
+
+    // Find type cell
+    const typeEl = row.querySelector('.type');
+    const type = typeEl ? typeEl.textContent.trim() : '';
+
+    // End date
+    let endDate = '';
+    const dataEnd = row.getAttribute('data-end');
+    if (dataEnd && dataEnd !== '9999') {
+      endDate = dataEnd;
+    } else {
+      const endsEl = row.querySelector('.ends');
+      if (endsEl) {
+        const text = endsEl.textContent.trim();
+        if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+          endDate = new Date(text.replace(' UTC', 'Z').replace(' ', 'T')).toISOString();
+        }
+      }
+    }
+
+    // Bids
+    const bidsEl = row.querySelector('.bids');
+    const bids = bidsEl ? bidsEl.textContent.trim() : '';
+
+    return { id, title, url: normalizeUrl(titleLink.href, id), image, price, type, endDate, bids };
+  } catch (e) {
+    return null;
+  }
+}
+
+function relativeTimeToDate(timeStr) {
+  // Parse relative time like "4d 23h", "2h 15m", "10m 30s"
+  const now = new Date();
+  let ms = 0;
+  const days = timeStr.match(/(\d+)\s*d/);
+  const hours = timeStr.match(/(\d+)\s*h/);
+  const mins = timeStr.match(/(\d+)\s*m(?!s)/);
+  const secs = timeStr.match(/(\d+)\s*s/);
+  if (days) ms += parseInt(days[1]) * 86400000;
+  if (hours) ms += parseInt(hours[1]) * 3600000;
+  if (mins) ms += parseInt(mins[1]) * 60000;
+  if (secs) ms += parseInt(secs[1]) * 1000;
+  if (ms === 0) return '';
+  const end = new Date(now.getTime() + ms);
+  return end.toISOString();
+}
+
+function formatEndDate(isoStr) {
+  if (!isoStr) return '\u2014';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return '\u2014';
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+  } catch(e) { return '\u2014'; }
+}
+
+function normalizeUrl(url, id) {
+  if (url && url.includes('ebay.com/itm/')) return url.split('?')[0];
+  if (id) return 'https://www.ebay.com/itm/' + id;
+  return url || '';
+}
+
+// ── Rendering ──
+function renderTable() {
+  tableBody.innerHTML = '';
+  const empty = items.length === 0;
+  emptyState.style.display = empty ? '' : 'none';
+  document.getElementById('watchTable').style.display = empty ? 'none' : '';
+  updateItemCount();
+  if (empty) return;
+
+  items.forEach((item, idx) => {
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-type', item.type);
+    tr.setAttribute('data-price', parseFloat(item.price.replace(/[$,]/g, '')) || 0);
+    tr.setAttribute('data-end', item.endDate || '9999');
+    tr.setAttribute('data-id', item.id);
+
+    const typeClass = item.type.includes('Buy It Now') ? 'bin' :
+                      item.type.includes('Auction') ? 'auction' : '';
+    const endDisplay = formatEndDate(item.endDate);
+
+    tr.innerHTML =
+      `<td class="num">${idx + 1}</td>` +
+      `<td class="img-cell">${item.image ?
+        `<img src="${escHtml(item.image)}" loading="lazy" alt="${escHtml(item.title)}">` :
+        `<div class="no-img">No image</div>`}</td>` +
+      `<td class="title"><a href="${escHtml(item.url)}" target="_blank">${escHtml(item.title)}</a></td>` +
+      `<td class="price">${escHtml(item.price)}</td>` +
+      `<td class="type ${typeClass}">${escHtml(item.type)}</td>` +
+      `<td class="ends">${endDisplay}</td>` +
+      `<td class="bids">${escHtml(item.bids || '\u2014')}</td>`;
+
+    tableBody.appendChild(tr);
+  });
+
+  filterRows();
+}
+
+function updateItemCount() {
+  const visibleRows = tableBody.querySelectorAll('tr:not([style*="display: none"])');
+  const total = items.length;
+  const binCount = items.filter(i => i.type.includes('Buy It Now')).length;
+  const auctionCount = items.filter(i => i.type.includes('Auction')).length;
+  itemCount.textContent = total > 0 ?
+    `${total} items \u2022 ${binCount} Buy It Now \u2022 ${auctionCount} Auction` : '';
+}
+
+function escHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str || '';
+  return div.innerHTML;
+}
+
+// ── Sorting ──
+document.querySelectorAll('th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    sortTable(parseInt(th.getAttribute('data-col')), th.getAttribute('data-type'));
+  });
+});
+
+function sortTable(colIdx, type) {
+  const rows = Array.from(tableBody.querySelectorAll('tr'));
+  const dir = sortDir[colIdx] === 'asc' ? 'desc' : 'asc';
+  sortDir[colIdx] = dir;
+
+  rows.sort((a, b) => {
+    let va, vb;
+    if (type === 'date') {
+      va = a.getAttribute('data-end') || '9999';
+      vb = b.getAttribute('data-end') || '9999';
+    } else {
+      va = (a.cells[colIdx] && a.cells[colIdx].textContent.trim()) || '';
+      vb = (b.cells[colIdx] && b.cells[colIdx].textContent.trim()) || '';
+    }
+    if (type === 'num') { va = parseFloat(va) || 0; vb = parseFloat(vb) || 0; }
+    else if (type === 'price') { va = parseFloat(va.replace(/[$,]/g, '')) || 0; vb = parseFloat(vb.replace(/[$,]/g, '')) || 0; }
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  rows.forEach(r => tableBody.appendChild(r));
+  document.querySelectorAll('th').forEach((th, i) => {
+    th.classList.toggle('sorted', i === colIdx);
+    const arrow = th.querySelector('.arrow');
+    if (arrow) arrow.innerHTML = (i === colIdx && dir === 'desc') ? '&#9660;' : '&#9650;';
+  });
+}
+
+// ── Filtering ──
+typeFilter.addEventListener('change', filterRows);
+searchBox.addEventListener('input', filterRows);
+
+function filterRows() {
+  const typeVal = typeFilter.value;
+  const search = searchBox.value.toLowerCase();
+  let visible = 0;
+  tableBody.querySelectorAll('tr').forEach(row => {
+    const typeCell = (row.cells[4] && row.cells[4].textContent) || '';
+    const title = (row.cells[2] && row.cells[2].textContent.toLowerCase()) || '';
+    const typeOk = typeVal === 'all' || typeCell.indexOf(typeVal) >= 0;
+    const searchOk = !search || title.indexOf(search) >= 0;
+    const show = typeOk && searchOk;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+}
+
+// ── Local Storage persistence ──
+function saveToStorage() {
+  try { localStorage.setItem('ebayWatchlistItems', JSON.stringify(items)); } catch(e) {}
+}
+
+function loadFromStorage() {
+  try {
+    const saved = localStorage.getItem('ebayWatchlistItems');
+    if (saved) { items = JSON.parse(saved); renderTable(); }
+  } catch(e) {}
+}
+
+// ── Export ──
+function exportGalleryHtml() {
+  const binCount = items.filter(i => i.type.includes('Buy It Now')).length;
+  const auctionCount = items.filter(i => i.type.includes('Auction')).length;
+  const date = new Date().toISOString().split('T')[0];
+
+  let rows = items.map((item, i) => {
+    const typeClass = item.type.includes('Buy It Now') ? 'bin' :
+                      item.type.includes('Auction') ? 'auction' : '';
+    const priceNum = parseFloat(item.price.replace(/[$,]/g, '')) || 0;
+    const endDisplay = formatEndDate(item.endDate);
+    return `    <tr data-price="${priceNum}" data-type="${escHtml(item.type)}" data-end="${item.endDate || '9999'}"><td class="num">${i+1}</td>` +
+      `<td class="img-cell">${item.image ? `<img src="${escHtml(item.image)}" loading="lazy">` : `<div class="no-img">No image</div>`}</td>` +
+      `<td class="title"><a href="${escHtml(item.url)}" target="_blank">${escHtml(item.title)}</a></td>` +
+      `<td class="price">${escHtml(item.price)}</td>` +
+      `<td class="type ${typeClass}">${escHtml(item.type)}</td>` +
+      `<td class="ends">${endDisplay}</td></tr>`;
+  }).join('\n');
+
+  const output = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>eBay Watchlist Gallery</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+  h1 { color: #1f4e79; margin-bottom: 4px; }
+  .subtitle { color: #666; margin-bottom: 16px; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
+  th { background: #1f4e79; color: #fff; padding: 12px 10px; text-align: left; font-size: 13px; }
+  td { padding: 10px; border-bottom: 1px solid #e8e8e8; vertical-align: middle; }
+  tr:hover { background: #f0f7ff; }
+  .num { width: 40px; text-align: center; color: #999; font-size: 13px; }
+  .img-cell { width: 140px; text-align: center; }
+  .img-cell img { max-width: 120px; max-height: 120px; border-radius: 4px; border: 1px solid #ddd; }
+  .no-img { width: 120px; height: 80px; background: #eee; display: flex; align-items: center; justify-content: center; color: #999; font-size: 12px; border-radius: 4px; margin: 0 auto; }
+  .title { font-size: 14px; }
+  .title a { color: #0654ba; text-decoration: none; }
+  .title a:hover { text-decoration: underline; }
+  .price { font-weight: bold; white-space: nowrap; font-size: 14px; }
+  .type { font-weight: bold; font-size: 13px; white-space: nowrap; }
+  .type.bin { color: #2e7d32; }
+  .type.auction { color: #e65100; }
+  .ends { font-size: 13px; white-space: nowrap; color: #555; }
+  .controls { margin-bottom: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .controls label { font-size: 13px; color: #555; }
+  .controls select, .controls input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+  th { cursor: pointer; user-select: none; }
+  th:hover { background: #163d5e; }
+  th .arrow { font-size: 10px; margin-left: 4px; opacity: 0.6; }
+  th.sorted .arrow { opacity: 1; }
+</style>
+</head>
+<body>
+<h1>eBay Watchlist</h1>
+<p class="subtitle">${items.length} items &bull; ${binCount} Buy It Now &bull; ${auctionCount} Auction &bull; Generated ${date}</p>
+
+<div class="controls">
+  <label>Filter: <select id="typeFilter">
+    <option value="all">All Types</option>
+    <option value="Buy It Now">Buy It Now</option>
+    <option value="Auction">Auction</option>
+  </select></label>
+  <label>Search: <input type="text" id="searchBox" placeholder="Search titles..."></label>
+</div>
+
+<table id="watchTable">
+  <thead><tr>
+    <th data-col="0" data-type="num"># <span class="arrow">&#9650;</span></th>
+    <th>Image</th>
+    <th data-col="2" data-type="text">Item Title <span class="arrow">&#9650;</span></th>
+    <th data-col="3" data-type="price">Price <span class="arrow">&#9650;</span></th>
+    <th data-col="4" data-type="text">Type <span class="arrow">&#9650;</span></th>
+    <th data-col="5" data-type="date">Ends <span class="arrow">&#9650;</span></th>
+  </tr></thead>
+  <tbody>
+${rows}
+  </tbody>
+</table>
+
+<` + `script>
+document.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('typeFilter').addEventListener('change', filterRows);
+  document.getElementById('searchBox').addEventListener('input', filterRows);
+  document.querySelectorAll('th[data-col]').forEach(function(th) {
+    th.addEventListener('click', function() {
+      sortTable(parseInt(th.getAttribute('data-col')), th.getAttribute('data-type'));
+    });
+  });
+});
+var sortDir = {};
+function sortTable(colIdx, type) {
+  var tbody = document.querySelector('#watchTable tbody');
+  var rows = Array.from(tbody.querySelectorAll('tr'));
+  var dir = sortDir[colIdx] === 'asc' ? 'desc' : 'asc';
+  sortDir[colIdx] = dir;
+  rows.sort(function(a, b) {
+    var va, vb;
+    if (type === 'date') {
+      va = a.getAttribute('data-end') || '9999';
+      vb = b.getAttribute('data-end') || '9999';
+    } else {
+      va = (a.cells[colIdx] && a.cells[colIdx].textContent.trim()) || '';
+      vb = (b.cells[colIdx] && b.cells[colIdx].textContent.trim()) || '';
+    }
+    if (type === 'num') { va = parseFloat(va)||0; vb = parseFloat(vb)||0; }
+    else if (type === 'price') { va = parseFloat(va.replace(/[$,]/g,''))||0; vb = parseFloat(vb.replace(/[$,]/g,''))||0; }
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  rows.forEach(function(r) { tbody.appendChild(r); });
+  document.querySelectorAll('th').forEach(function(th, i) {
+    th.classList.toggle('sorted', i === colIdx);
+    var arrow = th.querySelector('.arrow');
+    if (arrow) arrow.innerHTML = (i === colIdx && dir === 'desc') ? '&#9660;' : '&#9650;';
+  });
+}
+function filterRows() {
+  var typeVal = document.getElementById('typeFilter').value;
+  var search = document.getElementById('searchBox').value.toLowerCase();
+  document.querySelectorAll('#watchTable tbody tr').forEach(function(row) {
+    var typeCell = (row.cells[4] && row.cells[4].textContent) || '';
+    var title = (row.cells[2] && row.cells[2].textContent.toLowerCase()) || '';
+    var typeOk = typeVal === 'all' || typeCell.indexOf(typeVal) >= 0;
+    var searchOk = !search || title.indexOf(search) >= 0;
+    row.style.display = (typeOk && searchOk) ? '' : 'none';
+  });
+}
+<` + `/script>
+</body>
+</html>`;
+
+  const blob = new Blob([output], { type: 'text/html' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'eBay Watchlist Gallery.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus('Exported gallery HTML.', 'success');
+}
+
+// ── Status ──
+function setStatus(msg, cls) {
+  importStatus.textContent = msg;
+  importStatus.className = 'import-status' + (cls ? ' ' + cls : '');
+}
+
+// ── Init ──
+loadFromStorage();
+</script>
+</body>
+</html>

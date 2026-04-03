@@ -1,0 +1,9 @@
+# Test/sample files
+*.mhtml
+*.mht
+*.xlsx
+~$*
+
+# Old skill versions
+ebay-parser.skill
+ebay-parser-v2.skill
