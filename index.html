@@ -372,6 +372,15 @@ function parseWatchlistHtml(html) {
   }
 
   // Strategy 3: Saved gallery HTML (our own output format)
+  // First check for embedded JSON data (survives MHTML conversion)
+  const embeddedData = doc.getElementById('ebayItemData');
+  if (embeddedData) {
+    try {
+      const parsed = JSON.parse(embeddedData.textContent);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch(e) {}
+  }
+  // Fallback: parse table rows
   const galleryRows = doc.querySelectorAll('#watchTable tbody tr, table tbody tr');
   if (galleryRows.length > 0) {
     galleryRows.forEach(row => {
@@ -798,6 +807,8 @@ function exportGalleryHtml() {
   </select></label>
   <label>Search: <input type="text" id="searchBox" placeholder="Search titles..."></label>
 </div>
+
+<` + `script type="application/json" id="ebayItemData">${JSON.stringify(items)}<` + `/script>
 
 <table id="watchTable">
   <thead><tr>
