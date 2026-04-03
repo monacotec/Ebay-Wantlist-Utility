@@ -179,6 +179,11 @@ importBtn.addEventListener('click', async () => {
       }
 
       const parsed = parseWatchlistHtml(html);
+      // Clean HTML entities from all text fields
+      parsed.forEach(item => {
+        item.title = decodeHtmlEntities(item.title);
+        if (item.price) item.price = decodeHtmlEntities(item.price);
+      });
       if (parsed.length === 0) {
         errors.push(file.name + ': no items found');
       } else {
@@ -187,12 +192,12 @@ importBtn.addEventListener('click', async () => {
         newItems.forEach((item, idx) => { existingMap[item.id] = idx; });
         for (const item of parsed) {
           if (item.id in existingMap) {
-            // Merge: update image/type/endDate if the new source has better data
+            // Merge: later files override type/endDate/bids (individual listings are more accurate than gallery)
             const existing = newItems[existingMap[item.id]];
             if (item.image) existing.image = item.image;
-            if (item.type && !existing.type) existing.type = item.type;
-            if (item.endDate && !existing.endDate) existing.endDate = item.endDate;
-            if (item.bids && !existing.bids) existing.bids = item.bids;
+            if (item.type) existing.type = item.type;
+            if (item.endDate) existing.endDate = item.endDate;
+            if (item.bids) existing.bids = item.bids;
           } else {
             existingMap[item.id] = newItems.length;
             newItems.push(item);
@@ -203,6 +208,11 @@ importBtn.addEventListener('click', async () => {
       errors.push(file.name + ': ' + e.message);
     }
   }
+
+  // Post-process: clear endDate for Buy It Now items (BIN listing expiry dates are not meaningful)
+  newItems.forEach(item => {
+    if (item.type === 'Buy It Now') item.endDate = '';
+  });
 
   if (newItems.length === 0 && errors.length > 0) {
     setStatus(errors.join('; '), 'error');
@@ -271,10 +281,11 @@ function extractHtmlFromMhtml(mhtmlText) {
   for (const part of parts) {
     // Look for the main text/html part (not iframes/sub-resources)
     if (part.includes('Content-Type: text/html') && !part.includes('container.html') && !part.includes('cookie_push')) {
-      // Check if it's the main watchlist page
+      // Check if it's the main eBay page (watchlist or single listing)
       const isMainPage = part.includes('ebay.com/mye/myebay/watchlist') ||
                          part.includes('m-item-3') ||
-                         part.includes('data-itemid');
+                         part.includes('data-itemid') ||
+                         part.includes('ebayItemData');
 
       let content = part;
 
@@ -297,25 +308,35 @@ function extractHtmlFromMhtml(mhtmlText) {
         try { content = atob(content.replace(/\s/g, '')); } catch(e) {}
       }
 
-      if (isMainPage || content.includes('m-item-3') || content.includes('data-itemid')) {
+      // Recognize watchlist pages, single listing pages (canonical /itm/ URL), or our own gallery format
+      if (isMainPage || content.includes('m-item-3') || content.includes('data-itemid') ||
+          content.includes('ebayItemData') || /rel="canonical"[^>]*\/itm\//.test(content)) {
         return content;
       }
     }
   }
 
-  // Fallback: try the first text/html part
+  // Fallback: use the largest text/html part (most likely the main page)
+  let bestPart = null;
+  let bestLen = 0;
   for (const part of parts) {
-    if (part.includes('Content-Type: text/html')) {
-      let content = part;
-      const headerEnd = content.indexOf('\r\n\r\n');
-      if (headerEnd >= 0) content = content.substring(headerEnd + 4);
-      else {
-        const h2 = content.indexOf('\n\n');
-        if (h2 >= 0) content = content.substring(h2 + 2);
+    if (part.includes('Content-Type: text/html') && !part.includes('container.html') && !part.includes('cookie_push')) {
+      if (part.length > bestLen) {
+        bestLen = part.length;
+        bestPart = part;
       }
-      if (part.includes('quoted-printable')) content = decodeQuotedPrintable(content);
-      return content;
     }
+  }
+  if (bestPart) {
+    let content = bestPart;
+    const headerEnd = content.indexOf('\r\n\r\n');
+    if (headerEnd >= 0) content = content.substring(headerEnd + 4);
+    else {
+      const h2 = content.indexOf('\n\n');
+      if (h2 >= 0) content = content.substring(h2 + 2);
+    }
+    if (bestPart.includes('quoted-printable')) content = decodeQuotedPrintable(content);
+    return content;
   }
 
   throw new Error('No HTML content found in MHTML file');
@@ -354,6 +375,7 @@ function extractScriptMetadata(html) {
   for (const iid of ids) {
     const endTimes = [];
     let hasOrBin = false;
+    let hasBidText = false;
     let pos = 0;
     while ((pos = bigScript.indexOf(iid, pos)) !== -1) {
       const block = bigScript.substring(pos, pos + 3000);
@@ -362,11 +384,16 @@ function extractScriptMetadata(html) {
       if (etMatch) endTimes.push(etMatch[1]);
       // "Or Buy It Now" means auction with BIN option
       if (block.indexOf('Or Buy It Now') !== -1) hasOrBin = true;
+      // Detect auction signals: bid count, "Place bid", bidCount field
+      if (/Place bid|"bidCount"|bids?\s*:/i.test(block)) hasBidText = true;
       pos += iid.length;
     }
+    let listingType = 'Buy It Now';
+    if (hasOrBin) listingType = 'Auction (+ BIN)';
+    else if (hasBidText) listingType = 'Auction';
     meta[iid] = {
       endTime: endTimes.length > 0 ? endTimes[0] : '',
-      listingType: hasOrBin ? 'Auction (+ BIN)' : 'Buy It Now'
+      listingType: listingType
     };
   }
   return meta;
@@ -414,6 +441,10 @@ function parseWatchlistHtml(html) {
     try {
       const parsed = JSON.parse(embeddedData.textContent);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        // Gallery embedded JSON may have unreliable type and endDate from script-based
+        // detection (cross-contamination with recommendation items). Clear all endDates
+        // from gallery data — only fresh watchlist/listing parsing should provide dates.
+        parsed.forEach(item => { item.endDate = ''; });
         console.log('[Parser] Loaded ' + parsed.length + ' items from embedded JSON');
         return parsed;
       }
@@ -521,15 +552,17 @@ function parseEbayWatchlistItem(block, scriptMeta) {
       if (bidMatch) bids = bidMatch[1];
     }
 
-    // End date: prefer absolute ISO date from script metadata, fall back to relative time from DOM
-    const meta = (scriptMeta && scriptMeta[id]) || {};
-    let endDate = meta.endTime || '';
-
-    if (!endDate) {
-      const timeEl = block.querySelector('[data-testid="time-left"] .DEFAULT, [data-testid="time-left"] .URGENT');
-      if (timeEl) {
-        const timeLeft = timeEl.textContent.trim();
-        if (timeLeft) endDate = relativeTimeToDate(timeLeft);
+    // End date: only for auction items (BIN listings have endTime but it's just listing expiry, not meaningful)
+    let endDate = '';
+    if (type !== 'Buy It Now') {
+      const meta = (scriptMeta && scriptMeta[id]) || {};
+      endDate = meta.endTime || '';
+      if (!endDate) {
+        const timeEl = block.querySelector('[data-testid="time-left"] .DEFAULT, [data-testid="time-left"] .URGENT');
+        if (timeEl) {
+          const timeLeft = timeEl.textContent.trim();
+          if (timeLeft) endDate = relativeTimeToDate(timeLeft);
+        }
       }
     }
 
@@ -564,9 +597,12 @@ function parseSingleListingPage(doc, html, canonicalEl) {
     if (hasBid && hasBin) type = 'Auction (+ BIN)';
     else if (hasBid) type = 'Auction';
 
-    // End time from embedded JSON
-    const etMatch = html.match(/"endTime"\s*:\s*\{\s*"value"\s*:\s*"([^"]+)"/);
-    const endDate = etMatch ? etMatch[1] : '';
+    // End time from embedded JSON (only for auction items)
+    let endDate = '';
+    if (type !== 'Buy It Now') {
+      const etMatch = html.match(/"endTime"\s*:\s*\{\s*"value"\s*:\s*"([^"]+)"/);
+      endDate = etMatch ? etMatch[1] : '';
+    }
 
     // Image: first ebayimg hash found (primary listing image)
     const imgMatch = html.match(/images\/g\/([A-Za-z0-9~_\-]+)\//);
@@ -711,8 +747,14 @@ function updateItemCount() {
 
 function escHtml(str) {
   const div = document.createElement('div');
-  div.textContent = str || '';
+  div.textContent = decodeHtmlEntities(str || '');
   return div.innerHTML;
+}
+
+function decodeHtmlEntities(str) {
+  const el = document.createElement('textarea');
+  el.innerHTML = str;
+  return el.value;
 }
 
 // ── Sorting ──
